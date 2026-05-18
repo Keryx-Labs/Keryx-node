@@ -90,7 +90,16 @@ impl SendPingsFlow {
                 return Err(ProtocolError::ConnectionClosed);
             };
             router.enqueue(ping).await?;
-            let pong = dequeue_with_timeout!(self.incoming_route, Payload::Pong)?;
+            let pong = match dequeue_with_timeout!(self.incoming_route, Payload::Pong) {
+                Err(e @ ProtocolError::Timeout(_)) => {
+                    if let Some(cm) = self.ctx.connection_manager() {
+                        cm.record_ping_timeout(router.net_address().ip()).await;
+                    }
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
+                Ok(p) => p,
+            };
             if pong.nonce != nonce {
                 return Err(ProtocolError::Other("nonce mismatch between ping and pong"));
             } else {

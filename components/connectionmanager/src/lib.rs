@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use duration_string::DurationString;
@@ -24,6 +24,14 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
+const PING_TIMEOUT_BAN_THRESHOLD: u32 = 3;
+const PING_TIMEOUT_WINDOW: Duration = Duration::from_secs(600); // 10 minutes
+
+struct PingTimeoutRecord {
+    count: u32,
+    window_start: Instant,
+}
+
 pub struct ConnectionManager {
     p2p_adaptor: Arc<keryx_p2p_lib::Adaptor>,
     outbound_target: usize,
@@ -34,6 +42,7 @@ pub struct ConnectionManager {
     connection_requests: TokioMutex<HashMap<SocketAddr, ConnectionRequest>>,
     force_next_iteration: UnboundedSender<()>,
     shutdown_signal: SingleTrigger,
+    ping_timeout_tracker: ParkingLotMutex<HashMap<IpAddr, PingTimeoutRecord>>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +78,7 @@ impl ConnectionManager {
             shutdown_signal: SingleTrigger::new(),
             dns_seeders,
             default_port,
+            ping_timeout_tracker: Default::default(),
         });
         manager.clone().start_event_loop(rx);
         manager.force_next_iteration.send(()).unwrap();
@@ -319,6 +329,35 @@ impl ConnectionManager {
             }
         }
         self.address_manager.lock().ban(ip.into());
+    }
+
+    /// Records a ping timeout for the given IP. Bans it after PING_TIMEOUT_BAN_THRESHOLD
+    /// timeouts within PING_TIMEOUT_WINDOW — targets phantom nodes that flood inbound slots
+    /// by connecting silently then immediately reconnecting after each timeout.
+    pub async fn record_ping_timeout(&self, ip: IpAddr) {
+        if self.ip_has_permanent_connection(ip).await {
+            return;
+        }
+        let should_ban = {
+            let mut tracker = self.ping_timeout_tracker.lock();
+            let now = Instant::now();
+            let record = tracker.entry(ip).or_insert(PingTimeoutRecord { count: 0, window_start: now });
+            if record.window_start.elapsed() > PING_TIMEOUT_WINDOW {
+                record.count = 0;
+                record.window_start = now;
+            }
+            record.count += 1;
+            if record.count >= PING_TIMEOUT_BAN_THRESHOLD {
+                tracker.remove(&ip);
+                true
+            } else {
+                false
+            }
+        };
+        if should_ban {
+            warn!("Banning peer {} after {} ping timeouts within {:?}", ip, PING_TIMEOUT_BAN_THRESHOLD, PING_TIMEOUT_WINDOW);
+            self.ban(ip).await;
+        }
     }
 
     /// Returns whether the given address is banned.
