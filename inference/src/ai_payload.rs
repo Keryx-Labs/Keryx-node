@@ -4,7 +4,7 @@
 /// sides always agree on the binary layout.
 
 /// Binary payload layout for `SUBNETWORK_ID_AI_REQUEST` transactions:
-/// `[model_id: 32] [max_tokens: 4 LE] [fee: 8 LE] [prompt…]`
+/// `[model_id: 32] [max_tokens: 4 LE] [inference_reward: 8 LE] [prompt…]`
 pub const MIN_AI_REQUEST_PAYLOAD_LEN: usize = 44;
 pub const MAX_AI_REQUEST_PAYLOAD_LEN: usize = 4_096;
 
@@ -33,22 +33,22 @@ pub struct AiRequestPayload {
     pub model_id: [u8; 32],
     /// Maximum number of tokens to generate.
     pub max_tokens: u32,
-    /// Tip in sompi offered to the miner who answers this request.
-    pub fee: u64,
+    /// Reward in sompi paid to the miner who answers this request (distinct from the tx fee which is burned).
+    pub inference_reward: u64,
     /// Raw prompt bytes (UTF-8 recommended, not enforced at this layer).
     pub prompt: Vec<u8>,
 }
 
 impl AiRequestPayload {
-    pub fn new(model_id: [u8; 32], max_tokens: u32, fee: u64, prompt: Vec<u8>) -> Self {
-        Self { model_id, max_tokens, fee, prompt }
+    pub fn new(model_id: [u8; 32], max_tokens: u32, inference_reward: u64, prompt: Vec<u8>) -> Self {
+        Self { model_id, max_tokens, inference_reward, prompt }
     }
 
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(MIN_AI_REQUEST_PAYLOAD_LEN + self.prompt.len());
         out.extend_from_slice(&self.model_id);
         out.extend_from_slice(&self.max_tokens.to_le_bytes());
-        out.extend_from_slice(&self.fee.to_le_bytes());
+        out.extend_from_slice(&self.inference_reward.to_le_bytes());
         out.extend_from_slice(&self.prompt);
         out
     }
@@ -59,9 +59,9 @@ impl AiRequestPayload {
         }
         let model_id: [u8; 32] = data[0..32].try_into().ok()?;
         let max_tokens = u32::from_le_bytes(data[32..36].try_into().ok()?);
-        let fee = u64::from_le_bytes(data[36..44].try_into().ok()?);
+        let inference_reward = u64::from_le_bytes(data[36..44].try_into().ok()?);
         let prompt = data[44..].to_vec();
-        Some(Self { model_id, max_tokens, fee, prompt })
+        Some(Self { model_id, max_tokens, inference_reward, prompt })
     }
 
     /// Parse from a hex-encoded payload string (keryxd gRPC format).
