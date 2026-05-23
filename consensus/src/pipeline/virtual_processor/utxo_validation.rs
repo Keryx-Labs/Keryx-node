@@ -278,48 +278,8 @@ impl VirtualStateProcessor {
         if hashing::tx::hash(coinbase) != hashing::tx::hash(&expected_coinbase) { Err(BadCoinbaseTransaction) } else { Ok(()) }
     }
 
-    /// Rejects the block if any `AiResponse` tx uses a model_id not declared in the coinbase
-    /// `/ai:cap:` field.  Only runs after `model_cap_enforcement_activation`.
-    ///
-    /// Strategy: build a map `blake2b(AiRequest_payload)[0..32] → model_id` from the
-    /// AiRequest txs in this block (miners include the requests they answer), then for
-    /// each AiResponse check its `request_hash` against that map.  If the AiRequest lives
-    /// in an earlier block the response is skipped — cross-block enforcement is Phase 4.
-    /// If the miner declared no caps at all (not yet upgraded), enforcement is also skipped.
     fn check_ai_response_model_caps(&self, txs: &[Transaction]) -> BlockProcessResult<()> {
-        let declared_caps = parse_ai_caps(&txs[0].payload);
-        if declared_caps.is_empty() {
-            return Ok(());
-        }
-
-        // blake2b(AiRequest_payload)[0..32] → model_id
-        let mut request_model_map: std::collections::HashMap<[u8; 32], [u8; 32]> =
-            std::collections::HashMap::new();
-        for tx in txs.iter().skip(1) {
-            if tx.is_ai_request() {
-                if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
-                    let digest = blake2b_simd::blake2b(&tx.payload);
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&digest.as_bytes()[..32]);
-                    request_model_map.insert(key, req.model_id);
-                }
-            }
-        }
-
-        for tx in txs.iter().skip(1) {
-            if !tx.is_ai_response() {
-                continue;
-            }
-            if let Some(resp) = AiResponsePayload::deserialize(&tx.payload) {
-                if let Some(&model_id) = request_model_map.get(&resp.request_hash) {
-                    if !declared_caps.contains(&model_id) {
-                        return Err(AiResponseModelCapMissing(tx.id(), hex::encode(model_id)));
-                    }
-                }
-                // request not in same block → AiRequest came from an earlier block → skip
-            }
-        }
-        Ok(())
+        check_ai_response_model_caps(txs)
     }
 
     /// Validates transactions against the provided `utxo_view` and returns a vector with all transactions
@@ -633,11 +593,141 @@ impl VirtualStateProcessor {
     }
 }
 
+/// Rejects the block if any `AiResponse` tx uses a model_id not declared in the coinbase
+/// `/ai:cap:` field.  Only runs after `model_cap_enforcement_activation`.
+///
+/// Strategy: build a map `blake2b(AiRequest_payload)[0..32] → model_id` from the
+/// AiRequest txs in this block (miners include the requests they answer), then for
+/// each AiResponse check its `request_hash` against that map.  If the AiRequest lives
+/// in an earlier block the response is skipped — cross-block enforcement is Phase 4.
+/// If the miner declared no caps at all (not yet upgraded), enforcement is also skipped.
+fn check_ai_response_model_caps(txs: &[Transaction]) -> BlockProcessResult<()> {
+    let declared_caps = parse_ai_caps(&txs[0].payload);
+    if declared_caps.is_empty() {
+        return Ok(());
+    }
+
+    // blake2b(AiRequest_payload)[0..32] → model_id
+    let mut request_model_map: std::collections::HashMap<[u8; 32], [u8; 32]> =
+        std::collections::HashMap::new();
+    for tx in txs.iter().skip(1) {
+        if tx.is_ai_request() {
+            if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
+                let digest = blake2b_simd::blake2b(&tx.payload);
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&digest.as_bytes()[..32]);
+                request_model_map.insert(key, req.model_id);
+            }
+        }
+    }
+
+    for tx in txs.iter().skip(1) {
+        if !tx.is_ai_response() {
+            continue;
+        }
+        if let Some(resp) = AiResponsePayload::deserialize(&tx.payload) {
+            if let Some(&model_id) = request_model_map.get(&resp.request_hash) {
+                if !declared_caps.contains(&model_id) {
+                    return Err(AiResponseModelCapMissing(tx.id(), hex::encode(model_id)));
+                }
+            }
+            // request not in same block → AiRequest came from an earlier block → skip
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
+    use keryx_consensus_core::subnets;
 
     use super::*;
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn make_coinbase_with_caps(model_ids: &[[u8; 32]]) -> Transaction {
+        let mut payload = vec![0u8; 53];
+        let caps_str = model_ids.iter().map(hex::encode).collect::<Vec<_>>().join(",");
+        let extra = format!("0.2.8/2025-01-01/00000000deadbeef/ai:v1:aabbccdd11223344/ai:cap:{}", caps_str);
+        payload.extend_from_slice(extra.as_bytes());
+        Transaction::new(0, vec![], vec![], 0, subnets::SUBNETWORK_ID_COINBASE, 0, payload)
+    }
+
+    fn make_coinbase_no_caps() -> Transaction {
+        let mut payload = vec![0u8; 53];
+        payload.extend_from_slice(b"0.2.8/2025-01-01/00000000deadbeef/ai:v1:aabbccdd11223344");
+        Transaction::new(0, vec![], vec![], 0, subnets::SUBNETWORK_ID_COINBASE, 0, payload)
+    }
+
+    fn make_ai_request(model_id: [u8; 32]) -> Transaction {
+        let req = AiRequestPayload::new(model_id, 100, 1_000_000, b"test prompt".to_vec());
+        Transaction::new(0, vec![], vec![], 0, subnets::SUBNETWORK_ID_AI_REQUEST, 0, req.serialize())
+    }
+
+    fn make_ai_response_for(request_tx: &Transaction) -> Transaction {
+        let digest = blake2b_simd::blake2b(&request_tx.payload);
+        let mut request_hash = [0u8; 32];
+        request_hash.copy_from_slice(&digest.as_bytes()[..32]);
+        let resp = AiResponsePayload::new(request_hash, 1000, vec![0u8; 32]);
+        Transaction::new(0, vec![], vec![], 0, subnets::SUBNETWORK_ID_AI_RESPONSE, 0, resp.serialize())
+    }
+
+    fn make_ai_response_orphan(request_hash: [u8; 32]) -> Transaction {
+        let resp = AiResponsePayload::new(request_hash, 1000, vec![0u8; 32]);
+        Transaction::new(0, vec![], vec![], 0, subnets::SUBNETWORK_ID_AI_RESPONSE, 0, resp.serialize())
+    }
+
+    // ── check_ai_response_model_caps ─────────────────────────────────────────
+
+    #[test]
+    fn no_caps_declared_skips_enforcement() {
+        let model_id = [0xAAu8; 32];
+        let req = make_ai_request(model_id);
+        let resp = make_ai_response_for(&req);
+        let txs = vec![make_coinbase_no_caps(), req, resp];
+        assert!(check_ai_response_model_caps(&txs).is_ok());
+    }
+
+    #[test]
+    fn declared_model_is_accepted() {
+        let model_id = [0x11u8; 32];
+        let req = make_ai_request(model_id);
+        let resp = make_ai_response_for(&req);
+        let txs = vec![make_coinbase_with_caps(&[model_id]), req, resp];
+        assert!(check_ai_response_model_caps(&txs).is_ok());
+    }
+
+    #[test]
+    fn undeclared_model_is_rejected() {
+        let declared = [0x22u8; 32];
+        let used = [0x33u8; 32];
+        let req = make_ai_request(used);
+        let resp = make_ai_response_for(&req);
+        let txs = vec![make_coinbase_with_caps(&[declared]), req, resp];
+        assert!(matches!(check_ai_response_model_caps(&txs), Err(AiResponseModelCapMissing(_, _))));
+    }
+
+    #[test]
+    fn response_for_request_from_earlier_block_is_skipped() {
+        let model_id = [0x44u8; 32];
+        let orphan_hash = [0xFFu8; 32];
+        let resp = make_ai_response_orphan(orphan_hash);
+        let txs = vec![make_coinbase_with_caps(&[model_id]), resp];
+        assert!(check_ai_response_model_caps(&txs).is_ok());
+    }
+
+    #[test]
+    fn multiple_responses_one_undeclared_is_rejected() {
+        let declared = [0x55u8; 32];
+        let undeclared = [0x66u8; 32];
+        let req_ok = make_ai_request(declared);
+        let req_bad = make_ai_request(undeclared);
+        let resp_ok = make_ai_response_for(&req_ok);
+        let resp_bad = make_ai_response_for(&req_bad);
+        let txs = vec![make_coinbase_with_caps(&[declared]), req_ok, req_bad, resp_ok, resp_bad];
+        assert!(matches!(check_ai_response_model_caps(&txs), Err(AiResponseModelCapMissing(_, _))));
+    }
 
     #[test]
     fn test_rayon_reduce_retains_order() {
