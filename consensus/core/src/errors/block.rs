@@ -147,6 +147,15 @@ pub enum RuleError {
     #[error("AiResponse tx {0} references model_id {1} not declared in coinbase ai:cap:")]
     AiResponseModelCapMissing(TransactionId, String),
 
+    #[error("AiRequest tx {0} inference_reward {1} sompi is below minimum {2} sompi for model {3}")]
+    AiRequestInferenceRewardBelowMinimum(TransactionId, u64, u64, String),
+
+    #[error("AiRequest tx {0} priority_fee {1} sompi is below the minimum {2} sompi")]
+    AiRequestPriorityFeeBelowMinimum(TransactionId, u64, u64),
+
+    #[error("AiRequest tx {0} fee {1} sompi is less than inference_reward + priority_fee = {2} sompi")]
+    AiRequestFeeBelowInferenceReward(TransactionId, u64, u64),
+
     #[error("invalid transactions in new block template")]
     InvalidTransactionsInNewBlock(HashMap<TransactionId, TxRuleError>),
 

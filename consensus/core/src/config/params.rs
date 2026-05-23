@@ -3,6 +3,31 @@ pub use super::{
     constants::consensus::*,
     genesis::{DEVNET_GENESIS, GENESIS, GenesisBlock, SIMNET_GENESIS, TESTNET_GENESIS, TESTNET11_GENESIS},
 };
+
+// ── Inference reward minimums ─────────────────────────────────────────────────
+// model_id = blake2b-256(model_name), matching keryx-miner models.rs constants.
+
+/// TinyLlama 1.1B — blake2b-256("tinyllama")
+pub const TINYLLAMA_MODEL_ID: [u8; 32] = [
+    0x7b, 0x24, 0x0e, 0xd7, 0x6b, 0xa8, 0x46, 0x6c,
+    0xf9, 0x7d, 0xeb, 0x9b, 0xe6, 0x35, 0x81, 0x2d,
+    0x12, 0xd0, 0x49, 0x96, 0xcb, 0x56, 0x12, 0xcb,
+    0xf9, 0x9d, 0x24, 0x4d, 0x6d, 0x55, 0x1e, 0x9f,
+];
+
+/// DeepSeek-R1-8B — blake2b-256("deepseek-r1-8b")
+pub const DEEPSEEK_R1_8B_MODEL_ID: [u8; 32] = [
+    0x9b, 0x59, 0xa0, 0xa3, 0x73, 0x3c, 0xe8, 0xcf,
+    0x52, 0x0c, 0xa2, 0xa3, 0x55, 0x6a, 0x8b, 0x0c,
+    0xa3, 0x21, 0x64, 0xbd, 0x7f, 0xd3, 0x0b, 0xa3,
+    0x2d, 0x8d, 0xdf, 0x89, 0x68, 0x50, 0xf0, 0xb8,
+];
+
+/// Per-model minimum inference_reward in sompi.  TinyLlama = 0.5 KRX, DeepSeek = 2 KRX.
+pub const INFERENCE_REWARD_MINIMUMS: &[([u8; 32], u64)] = &[
+    (TINYLLAMA_MODEL_ID,     50_000_000),   // 0.5 KRX
+    (DEEPSEEK_R1_8B_MODEL_ID, 200_000_000), // 2.0 KRX
+];
 use crate::{
     BlockLevel, KType,
     constants::STORAGE_MASS_PARAMETER,
@@ -224,6 +249,9 @@ pub struct OverrideParams {
 
     /// Model capability enforcement hardfork activation DAA score
     pub model_cap_enforcement_activation: Option<ForkActivation>,
+
+    #[serde(skip)]
+    pub inference_reward_minimums: Option<&'static [([u8; 32], u64)]>,
 }
 
 impl From<Params> for OverrideParams {
@@ -253,6 +281,7 @@ impl From<Params> for OverrideParams {
             blockrate: Some(p.blockrate),
             crescendo_activation: Some(p.crescendo_activation),
             model_cap_enforcement_activation: Some(p.model_cap_enforcement_activation),
+            inference_reward_minimums: Some(p.inference_reward_minimums),
         }
     }
 }
@@ -322,6 +351,11 @@ pub struct Params {
     /// After this score, blocks containing AiResponse txs whose model_id is not
     /// declared in the coinbase ai:cap: field are rejected by consensus.
     pub model_cap_enforcement_activation: ForkActivation,
+
+    /// Per-model minimum inference_reward (sompi) enforced from `model_cap_enforcement_activation`.
+    /// AiRequest txs below the minimum for their model_id are rejected.
+    /// Fulfilled inference_rewards are redirected from the fee burn to the responding miner.
+    pub inference_reward_minimums: &'static [([u8; 32], u64)],
 }
 
 impl Params {
@@ -494,6 +528,10 @@ impl Params {
             model_cap_enforcement_activation: overrides
                 .model_cap_enforcement_activation
                 .unwrap_or(self.model_cap_enforcement_activation),
+
+            inference_reward_minimums: overrides
+                .inference_reward_minimums
+                .unwrap_or(self.inference_reward_minimums),
         }
     }
 }
@@ -584,6 +622,7 @@ pub const MAINNET_PARAMS: Params = Params {
     // TODO: set to (current_mainnet_daa_score + ~6_048_000) just before deployment.
     // At 10 BPS: 10 * 86400 * 7 ≈ 6_048_000 blocks per week.
     model_cap_enforcement_activation: ForkActivation::never(),
+    inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };
 
 pub const TESTNET_PARAMS: Params = Params {
@@ -629,6 +668,7 @@ pub const TESTNET_PARAMS: Params = Params {
     crescendo_activation: ForkActivation::new(0),
 
     model_cap_enforcement_activation: ForkActivation::never(),
+    inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };
 
 pub const SIMNET_PARAMS: Params = Params {
@@ -671,6 +711,7 @@ pub const SIMNET_PARAMS: Params = Params {
     crescendo_activation: ForkActivation::always(),
 
     model_cap_enforcement_activation: ForkActivation::always(),
+    inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };
 
 pub const DEVNET_PARAMS: Params = Params {
@@ -711,4 +752,5 @@ pub const DEVNET_PARAMS: Params = Params {
     crescendo_activation: ForkActivation::always(),
 
     model_cap_enforcement_activation: ForkActivation::always(),
+    inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };

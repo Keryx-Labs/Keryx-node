@@ -175,6 +175,7 @@ pub struct VirtualStateProcessor {
 
     // OPoI Phase 3 hardfork: model capability enforcement activation score
     pub(super) model_cap_enforcement_activation: ForkActivation,
+    pub(super) inference_reward_minimums: &'static [([u8; 32], u64)],
 }
 
 impl VirtualStateProcessor {
@@ -244,6 +245,7 @@ impl VirtualStateProcessor {
             ai_slashed_store: storage.ai_slashed_store.clone(),
 
             model_cap_enforcement_activation: params.model_cap_enforcement_activation,
+            inference_reward_minimums: params.inference_reward_minimums,
         }
     }
 

@@ -4,8 +4,12 @@
 /// sides always agree on the binary layout.
 
 /// Binary payload layout for `SUBNETWORK_ID_AI_REQUEST` transactions:
-/// `[model_id: 32] [max_tokens: 4 LE] [inference_reward: 8 LE] [prompt…]`
-pub const MIN_AI_REQUEST_PAYLOAD_LEN: usize = 44;
+/// `[model_id: 32] [max_tokens: 4 LE] [inference_reward: 8 LE] [priority_fee: 8 LE] [prompt…]`
+pub const MIN_AI_REQUEST_PAYLOAD_LEN: usize = 52;
+
+/// Minimum priority_fee (sompi) for an AiRequest — matches the network flat minimum tx fee (0.3 KRX).
+/// Requesters may set a higher value to get their request processed faster.
+pub const MIN_AI_REQUEST_PRIORITY_FEE: u64 = 30_000_000;
 pub const MAX_AI_REQUEST_PAYLOAD_LEN: usize = 4_096;
 
 /// Binary payload layout for `SUBNETWORK_ID_AI_RESPONSE` transactions:
@@ -33,15 +37,17 @@ pub struct AiRequestPayload {
     pub model_id: [u8; 32],
     /// Maximum number of tokens to generate.
     pub max_tokens: u32,
-    /// Reward in sompi paid to the miner who answers this request (distinct from the tx fee which is burned).
+    /// Sompi paid to the miner who fulfils this request (redirected from fee burn to miner payout).
     pub inference_reward: u64,
+    /// Sompi burned as a network fee (minimum MIN_AI_REQUEST_PRIORITY_FEE; set higher for priority).
+    pub priority_fee: u64,
     /// Raw prompt bytes (UTF-8 recommended, not enforced at this layer).
     pub prompt: Vec<u8>,
 }
 
 impl AiRequestPayload {
-    pub fn new(model_id: [u8; 32], max_tokens: u32, inference_reward: u64, prompt: Vec<u8>) -> Self {
-        Self { model_id, max_tokens, inference_reward, prompt }
+    pub fn new(model_id: [u8; 32], max_tokens: u32, inference_reward: u64, priority_fee: u64, prompt: Vec<u8>) -> Self {
+        Self { model_id, max_tokens, inference_reward, priority_fee, prompt }
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -49,6 +55,7 @@ impl AiRequestPayload {
         out.extend_from_slice(&self.model_id);
         out.extend_from_slice(&self.max_tokens.to_le_bytes());
         out.extend_from_slice(&self.inference_reward.to_le_bytes());
+        out.extend_from_slice(&self.priority_fee.to_le_bytes());
         out.extend_from_slice(&self.prompt);
         out
     }
@@ -60,8 +67,9 @@ impl AiRequestPayload {
         let model_id: [u8; 32] = data[0..32].try_into().ok()?;
         let max_tokens = u32::from_le_bytes(data[32..36].try_into().ok()?);
         let inference_reward = u64::from_le_bytes(data[36..44].try_into().ok()?);
-        let prompt = data[44..].to_vec();
-        Some(Self { model_id, max_tokens, inference_reward, prompt })
+        let priority_fee = u64::from_le_bytes(data[44..52].try_into().ok()?);
+        let prompt = data[52..].to_vec();
+        Some(Self { model_id, max_tokens, inference_reward, priority_fee, prompt })
     }
 
     /// Parse from a hex-encoded payload string (keryxd gRPC format).
@@ -185,6 +193,7 @@ mod tests {
             [42u8; 32],
             256,
             1_000_000,
+            30_000_000,
             b"What is the capital of France?".to_vec(),
         );
         let bytes = req.serialize();

@@ -3,6 +3,8 @@ use crate::{
     errors::{
         BlockProcessResult,
         RuleError::{
+            AiRequestFeeBelowInferenceReward, AiRequestInferenceRewardBelowMinimum,
+            AiRequestPriorityFeeBelowMinimum,
             AiResponseModelCapMissing, BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment,
             InvalidTransactionsInUtxoContext, WrongHeaderPruningPoint,
         },
@@ -147,11 +149,38 @@ impl VirtualStateProcessor {
             ctx.multiset_hash.combine(&inner_multiset);
 
             let mut block_fee = 0u64;
+            // Build request_hash → inference_reward map for AiRequest txs in this block.
+            let mut request_reward_map: std::collections::HashMap<[u8; 32], u64> =
+                std::collections::HashMap::new();
+            if self.model_cap_enforcement_activation.is_active(pov_daa_score) {
+                for tx in txs.iter().skip(1) {
+                    if tx.is_ai_request() {
+                        if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
+                            let digest = blake2b_simd::blake2b(&tx.payload);
+                            let mut key = [0u8; 32];
+                            key.copy_from_slice(&digest.as_bytes()[..32]);
+                            request_reward_map.insert(key, req.inference_reward);
+                        }
+                    }
+                }
+            }
+
+            let mut inference_reward_total = 0u64;
             for (validated_tx, _) in validated_transactions.iter() {
                 ctx.mergeset_diff.add_transaction(validated_tx, pov_daa_score).unwrap();
                 ctx.accepted_tx_ids.push(validated_tx.id());
                 block_fee += validated_tx.calculated_fee;
+                // Sum inference_rewards for AiResponse txs whose request is in this block.
+                if !request_reward_map.is_empty() && validated_tx.tx.is_ai_response() {
+                    if let Some(resp) = AiResponsePayload::deserialize(&validated_tx.tx.payload) {
+                        if let Some(&reward) = request_reward_map.get(&resp.request_hash) {
+                            inference_reward_total += reward;
+                        }
+                    }
+                }
             }
+            // Safety cap: never redirect more than the total collected fees.
+            inference_reward_total = inference_reward_total.min(block_fee);
 
             ctx.mergeset_acceptance_data.push(MergesetBlockAcceptanceData {
                 block_hash: merged_block,
@@ -172,11 +201,12 @@ impl VirtualStateProcessor {
                 self.coinbase_manager.parse_escrow_from_extra_data(coinbase_data.miner_data.extra_data);
             ctx.mergeset_rewards.insert(
                 merged_block,
-                BlockRewardData::new_with_escrow(
+                BlockRewardData::new_with_inference_reward(
                     coinbase_data.subsidy,
                     block_fee,
                     coinbase_data.miner_data.script_public_key,
                     escrow_spk,
+                    inference_reward_total,
                 ),
             );
 
@@ -243,6 +273,11 @@ impl VirtualStateProcessor {
         if validated_transactions.len() < txs.len() - 1 {
             // Some non-coinbase transactions are invalid
             return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - validated_transactions.len(), txs.len() - 1));
+        }
+
+        // Enforce AiRequest inference_reward minimums and fee coverage after activation.
+        if self.model_cap_enforcement_activation.is_active(header.daa_score) {
+            check_ai_request_inference_rewards(&txs, &validated_transactions, self.inference_reward_minimums)?;
         }
 
         Ok(())
@@ -591,6 +626,54 @@ impl VirtualStateProcessor {
             keryx_merkle::calc_merkle_root(accepted_tx_ids),
         )
     }
+}
+
+/// Rejects the block if any AiRequest tx violates inference_reward/priority_fee rules:
+/// - inference_reward below the per-model minimum
+/// - priority_fee below MIN_AI_REQUEST_PRIORITY_FEE
+/// - UTXO fee < inference_reward + priority_fee
+fn check_ai_request_inference_rewards(
+    txs: &[Transaction],
+    validated: &[(keryx_consensus_core::tx::ValidatedTransaction<'_>, u32)],
+    minimums: &[([u8; 32], u64)],
+) -> BlockProcessResult<()> {
+    let fee_map: std::collections::HashMap<TransactionId, u64> =
+        validated.iter().map(|(vt, _)| (vt.id(), vt.calculated_fee)).collect();
+
+    for tx in txs.iter().skip(1) {
+        if !tx.is_ai_request() {
+            continue;
+        }
+        if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
+            // Check inference_reward minimum per model_id.
+            if let Some(&(_, min_reward)) = minimums.iter().find(|(id, _)| *id == req.model_id) {
+                if req.inference_reward < min_reward {
+                    return Err(AiRequestInferenceRewardBelowMinimum(
+                        tx.id(),
+                        req.inference_reward,
+                        min_reward,
+                        hex::encode(req.model_id),
+                    ));
+                }
+            }
+            // Check priority_fee minimum.
+            if req.priority_fee < keryx_inference::MIN_AI_REQUEST_PRIORITY_FEE {
+                return Err(AiRequestPriorityFeeBelowMinimum(
+                    tx.id(),
+                    req.priority_fee,
+                    keryx_inference::MIN_AI_REQUEST_PRIORITY_FEE,
+                ));
+            }
+            // Check UTXO fee covers inference_reward + priority_fee.
+            if let Some(&calculated_fee) = fee_map.get(&tx.id()) {
+                let required = req.inference_reward.saturating_add(req.priority_fee);
+                if calculated_fee < required {
+                    return Err(AiRequestFeeBelowInferenceReward(tx.id(), calculated_fee, required));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rejects the block if any `AiResponse` tx uses a model_id not declared in the coinbase
