@@ -3,8 +3,8 @@ use crate::{
     errors::{
         BlockProcessResult,
         RuleError::{
-            BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment, InvalidTransactionsInUtxoContext,
-            WrongHeaderPruningPoint,
+            AiResponseModelCapMissing, BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment,
+            InvalidTransactionsInUtxoContext, WrongHeaderPruningPoint,
         },
     },
     model::stores::{
@@ -39,7 +39,7 @@ use keryx_consensus_core::{
 use keryx_consensus_core::collateral::CHALLENGE_WINDOW_BLOCKS;
 use keryx_core::{info, trace, warn};
 use keryx_hashes::Hash;
-use keryx_inference::{AiChallengePayload, AiResponsePayload, FraudProofResult, FRAUD_PROOF_LEN, verify_fraud_proof};
+use keryx_inference::{AiChallengePayload, AiRequestPayload, AiResponsePayload, FraudProofResult, FRAUD_PROOF_LEN, parse_ai_caps, verify_fraud_proof};
 use keryx_muhash::MuHash;
 use keryx_utils::refs::Refs;
 
@@ -231,6 +231,11 @@ impl VirtualStateProcessor {
         let reply = self.verify_header_pruning_point(header, ctx.ghostdag_data.to_compact())?;
         ctx.pruning_sample_from_pov = Some(reply.pruning_sample);
 
+        // OPoI Phase 3 hardfork: enforce model capability declarations after activation.
+        if self.model_cap_enforcement_activation.is_active(header.daa_score) {
+            self.check_ai_response_model_caps(&txs)?;
+        }
+
         // Verify all transactions are valid in context
         let current_utxo_view = selected_parent_utxo_view.compose(&ctx.mergeset_diff);
         let validated_transactions =
@@ -271,6 +276,50 @@ impl VirtualStateProcessor {
             .unwrap()
             .tx;
         if hashing::tx::hash(coinbase) != hashing::tx::hash(&expected_coinbase) { Err(BadCoinbaseTransaction) } else { Ok(()) }
+    }
+
+    /// Rejects the block if any `AiResponse` tx uses a model_id not declared in the coinbase
+    /// `/ai:cap:` field.  Only runs after `model_cap_enforcement_activation`.
+    ///
+    /// Strategy: build a map `blake2b(AiRequest_payload)[0..32] → model_id` from the
+    /// AiRequest txs in this block (miners include the requests they answer), then for
+    /// each AiResponse check its `request_hash` against that map.  If the AiRequest lives
+    /// in an earlier block the response is skipped — cross-block enforcement is Phase 4.
+    /// If the miner declared no caps at all (not yet upgraded), enforcement is also skipped.
+    fn check_ai_response_model_caps(&self, txs: &[Transaction]) -> BlockProcessResult<()> {
+        let declared_caps = parse_ai_caps(&txs[0].payload);
+        if declared_caps.is_empty() {
+            return Ok(());
+        }
+
+        // blake2b(AiRequest_payload)[0..32] → model_id
+        let mut request_model_map: std::collections::HashMap<[u8; 32], [u8; 32]> =
+            std::collections::HashMap::new();
+        for tx in txs.iter().skip(1) {
+            if tx.is_ai_request() {
+                if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
+                    let digest = blake2b_simd::blake2b(&tx.payload);
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&digest.as_bytes()[..32]);
+                    request_model_map.insert(key, req.model_id);
+                }
+            }
+        }
+
+        for tx in txs.iter().skip(1) {
+            if !tx.is_ai_response() {
+                continue;
+            }
+            if let Some(resp) = AiResponsePayload::deserialize(&tx.payload) {
+                if let Some(&model_id) = request_model_map.get(&resp.request_hash) {
+                    if !declared_caps.contains(&model_id) {
+                        return Err(AiResponseModelCapMissing(tx.id(), hex::encode(model_id)));
+                    }
+                }
+                // request not in same block → AiRequest came from an earlier block → skip
+            }
+        }
+        Ok(())
     }
 
     /// Validates transactions against the provided `utxo_view` and returns a vector with all transactions

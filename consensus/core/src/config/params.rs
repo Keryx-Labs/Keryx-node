@@ -221,6 +221,9 @@ pub struct OverrideParams {
 
     /// Crescendo activation DAA score
     pub crescendo_activation: Option<ForkActivation>,
+
+    /// Model capability enforcement hardfork activation DAA score
+    pub model_cap_enforcement_activation: Option<ForkActivation>,
 }
 
 impl From<Params> for OverrideParams {
@@ -249,6 +252,7 @@ impl From<Params> for OverrideParams {
             pruning_proof_m: Some(p.pruning_proof_m),
             blockrate: Some(p.blockrate),
             crescendo_activation: Some(p.crescendo_activation),
+            model_cap_enforcement_activation: Some(p.model_cap_enforcement_activation),
         }
     }
 }
@@ -313,6 +317,11 @@ pub struct Params {
 
     /// Crescendo activation DAA score
     pub crescendo_activation: ForkActivation,
+
+    /// Model capability enforcement hardfork activation DAA score.
+    /// After this score, blocks containing AiResponse txs whose model_id is not
+    /// declared in the coinbase ai:cap: field are rejected by consensus.
+    pub model_cap_enforcement_activation: ForkActivation,
 }
 
 impl Params {
@@ -481,6 +490,10 @@ impl Params {
                 .unwrap_or(self.pre_crescendo_target_time_per_block),
 
             crescendo_activation: overrides.crescendo_activation.unwrap_or(self.crescendo_activation),
+
+            model_cap_enforcement_activation: overrides
+                .model_cap_enforcement_activation
+                .unwrap_or(self.model_cap_enforcement_activation),
         }
     }
 }
@@ -567,6 +580,10 @@ pub const MAINNET_PARAMS: Params = Params {
     pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
 
     crescendo_activation: ForkActivation::new(0),
+
+    // TODO: set to (current_mainnet_daa_score + ~6_048_000) just before deployment.
+    // At 10 BPS: 10 * 86400 * 7 ≈ 6_048_000 blocks per week.
+    model_cap_enforcement_activation: ForkActivation::never(),
 };
 
 pub const TESTNET_PARAMS: Params = Params {
@@ -610,6 +627,8 @@ pub const TESTNET_PARAMS: Params = Params {
     pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
 
     crescendo_activation: ForkActivation::new(0),
+
+    model_cap_enforcement_activation: ForkActivation::never(),
 };
 
 pub const SIMNET_PARAMS: Params = Params {
@@ -650,6 +669,8 @@ pub const SIMNET_PARAMS: Params = Params {
     pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
 
     crescendo_activation: ForkActivation::always(),
+
+    model_cap_enforcement_activation: ForkActivation::always(),
 };
 
 pub const DEVNET_PARAMS: Params = Params {
@@ -688,4 +709,6 @@ pub const DEVNET_PARAMS: Params = Params {
     pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
 
     crescendo_activation: ForkActivation::always(),
+
+    model_cap_enforcement_activation: ForkActivation::always(),
 };

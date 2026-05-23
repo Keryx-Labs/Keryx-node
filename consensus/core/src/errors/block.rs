@@ -144,6 +144,9 @@ pub enum RuleError {
     #[error("{0} non-coinbase transactions (out of {1}) are invalid in UTXO context")]
     InvalidTransactionsInUtxoContext(usize, usize),
 
+    #[error("AiResponse tx {0} references model_id {1} not declared in coinbase ai:cap:")]
+    AiResponseModelCapMissing(TransactionId, String),
+
     #[error("invalid transactions in new block template")]
     InvalidTransactionsInNewBlock(HashMap<TransactionId, TxRuleError>),
 
