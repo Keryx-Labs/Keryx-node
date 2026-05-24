@@ -490,13 +490,10 @@ impl VirtualStateProcessor {
                 let response_hash = Hash::from_bytes(response_hash_bytes);
 
                 // Extract request_hash and claimed_commitment for Phase 3 C fraud verification.
+                // Commitment = sha2-256 digest embedded in the IPFS multihash (bytes [2..34]).
                 let (request_hash, claimed_commitment) =
                     if let Some(resp) = AiResponsePayload::deserialize(&tx.payload) {
-                        let commitment: [u8; 32] = if resp.result.len() >= 32 {
-                            resp.result[0..32].try_into().unwrap()
-                        } else {
-                            [0u8; 32] // under-length result → zero commitment → always challengeable
-                        };
+                        let commitment: [u8; 32] = resp.response_ipfs_cid[2..34].try_into().unwrap();
                         (resp.request_hash, commitment)
                     } else {
                         ([0u8; 32], [0u8; 32])

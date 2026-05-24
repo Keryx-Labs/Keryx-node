@@ -619,9 +619,8 @@ pub const MAINNET_PARAMS: Params = Params {
 
     crescendo_activation: ForkActivation::new(0),
 
-    // TODO: set to (current_mainnet_daa_score + ~6_048_000) just before deployment.
-    // At 10 BPS: 10 * 86400 * 7 ≈ 6_048_000 blocks per week.
-    model_cap_enforcement_activation: ForkActivation::never(),
+    // Hardfork activation: 2026-05-28 15:00 UTC — DAA 11_409_033 + ~4_140_000 (115h × 10 BPS).
+    model_cap_enforcement_activation: ForkActivation::new(15_550_000),
     inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };
 
@@ -667,7 +666,8 @@ pub const TESTNET_PARAMS: Params = Params {
 
     crescendo_activation: ForkActivation::new(0),
 
-    model_cap_enforcement_activation: ForkActivation::never(),
+    // Testnet: activate ~5 min after genesis (3_000 blocks at 10 BPS) to observe the transition.
+    model_cap_enforcement_activation: ForkActivation::new(3_000),
     inference_reward_minimums: INFERENCE_REWARD_MINIMUMS,
 };
 
