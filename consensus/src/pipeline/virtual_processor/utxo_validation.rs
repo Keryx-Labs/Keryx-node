@@ -237,6 +237,12 @@ impl VirtualStateProcessor {
 
         // OPoI Phase 3 hardfork: enforce model capability declarations after activation.
         if self.model_cap_enforcement_activation.is_active(header.daa_score) {
+            if header.daa_score == self.model_cap_enforcement_activation.daa_score() {
+                info!(
+                    "=== OPoI HARDFORK ACTIVATED at DAA {} — UTXO escrow + model cap enforcement now live ===",
+                    header.daa_score
+                );
+            }
             self.check_ai_response_model_caps(&txs)?;
         }
 
