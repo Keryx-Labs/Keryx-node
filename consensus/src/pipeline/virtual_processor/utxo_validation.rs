@@ -42,7 +42,7 @@ use keryx_consensus_core::{
 use keryx_consensus_core::collateral::CHALLENGE_WINDOW_BLOCKS;
 use keryx_core::{info, trace, warn};
 use keryx_hashes::Hash;
-use keryx_inference::{AiChallengePayload, AiRequestPayload, AiResponsePayload, FraudProofResult, FRAUD_PROOF_LEN, parse_ai_caps, verify_fraud_proof};
+use keryx_inference::{AiChallengePayload, AiRequestPayload, AiResponsePayload, FraudProofResult, FRAUD_PROOF_LEN, INFERENCE_REWARD_TOKEN_STEP, parse_ai_caps, verify_fraud_proof};
 use keryx_muhash::MuHash;
 use keryx_txscript::script_class::ScriptClass;
 use keryx_utils::refs::Refs;
@@ -623,13 +623,16 @@ fn check_ai_request_inference_rewards(
             continue;
         }
         if let Some(req) = AiRequestPayload::deserialize(&tx.payload) {
-            // Check inference_reward minimum per model_id.
-            if let Some(&(_, min_reward)) = minimums.iter().find(|(id, _)| *id == req.model_id) {
-                if req.inference_reward < min_reward {
+            // Check inference_reward minimum per model_id, including token-count surcharge.
+            // effective_min = base[model] + ceil(max_tokens / 64) * TOKEN_STEP
+            if let Some(&(_, base_reward)) = minimums.iter().find(|(id, _)| *id == req.model_id) {
+                let token_surcharge = ((req.max_tokens as u64 + 63) / 64) * INFERENCE_REWARD_TOKEN_STEP;
+                let effective_min = base_reward + token_surcharge;
+                if req.inference_reward < effective_min {
                     return Err(AiRequestInferenceRewardBelowMinimum(
                         tx.id(),
                         req.inference_reward,
-                        min_reward,
+                        effective_min,
                         hex::encode(req.model_id),
                     ));
                 }

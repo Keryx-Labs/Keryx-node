@@ -10,6 +10,11 @@ pub const MIN_AI_REQUEST_PAYLOAD_LEN: usize = 52;
 /// Minimum priority_fee (sompi) for an AiRequest — matches the network flat minimum tx fee (0.3 KRX).
 /// Requesters may set a higher value to get their request processed faster.
 pub const MIN_AI_REQUEST_PRIORITY_FEE: u64 = 30_000_000;
+
+/// Surcharge added to the per-model inference_reward minimum per 64-token increment of max_tokens.
+/// Enforced alongside model_cap_enforcement_activation (same hardfork gate).
+/// Formula: effective_min = base[model] + ceil(max_tokens / 64) * TOKEN_STEP  (0.005 KRX per step)
+pub const INFERENCE_REWARD_TOKEN_STEP: u64 = 5_000_000;
 pub const MAX_AI_REQUEST_PAYLOAD_LEN: usize = 4_096;
 
 /// Binary payload layout for `SUBNETWORK_ID_AI_RESPONSE` transactions:
