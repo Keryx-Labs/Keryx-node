@@ -78,7 +78,7 @@ impl AddressManager {
         let extender = if self.local_net_addresses.is_empty() && !self.config.disable_upnp {
             let (net_address, ExtendHelper { gateway, local_addr, external_port }) = match self.upnp() {
                 Err(err) => {
-                    warn!("[UPnP] Error adding port mapping: {err}");
+                    info!("[UPnP] Port mapping unavailable ({}). Use --disable-upnp to silence or --externalip to set your public IP manually.", err);
                     return None;
                 }
                 Ok(None) => return None,
