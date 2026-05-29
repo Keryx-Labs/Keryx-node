@@ -136,11 +136,11 @@ const INFERENCE_CHALLENGE_INTERVAL_DAA: u64 = 3_600;
 struct ChallengeState {
     /// Hex-encoded model_id that was challenged.
     model_id_hex: String,
-    /// Random nonce included in the prompt so the miner cannot pre-compute the answer.
+    /// Random nonce included in the prompt — echoed back by the miner to prevent replay.
     nonce_hex: String,
     /// DAA score at which the challenge was issued — used to expire and re-issue.
     issued_at_daa: u64,
-    /// True once the miner submitted a non-empty, non-garbage inference result.
+    /// True once the miner submitted a valid inference result with matching nonce.
     passed: bool,
 }
 
@@ -426,22 +426,27 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
             let mut states = self.inference_challenge_states.lock().expect("challenge states lock");
 
             // Validate challenge result submitted by the miner in this request.
+            // Expected format: "<model_id_hex>:<nonce_hex>:<result_text>"
             if !request.inference_result.is_empty() {
                 if let Some(state) = states.get_mut(&conn_id) {
-                    // Format: "<model_id_hex>:<result_text>"
-                    let result_valid = request.inference_result
-                        .split_once(':')
-                        .map(|(model_hex, result_text)| {
-                            model_hex == state.model_id_hex
-                                && !result_text.is_empty()
-                                && !result_text.starts_with('[')
-                        })
-                        .unwrap_or(false);
+                    let mut parts = request.inference_result.splitn(3, ':');
+                    let model_hex  = parts.next().unwrap_or("");
+                    let nonce_echo = parts.next().unwrap_or("");
+                    let result_text = parts.next().unwrap_or("");
+                    let result_valid = model_hex == state.model_id_hex
+                        && nonce_echo == state.nonce_hex
+                        && !result_text.is_empty()
+                        && !result_text.starts_with('[');
                     if result_valid {
                         log::info!("OPoI challenge: connection {} passed for model {}", conn_id, state.model_id_hex);
                         state.passed = true;
                     } else {
-                        log::warn!("OPoI challenge: connection {} submitted invalid result", conn_id);
+                        log::warn!(
+                            "OPoI challenge: connection {} invalid result (model_match={}, nonce_match={})",
+                            conn_id,
+                            model_hex == state.model_id_hex,
+                            nonce_echo == state.nonce_hex,
+                        );
                     }
                 }
             }
