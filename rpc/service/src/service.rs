@@ -451,13 +451,17 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
                 }
             }
 
-            // Determine if a new challenge should be issued.
-            let needs_challenge = match states.get(&conn_id) {
+            // Issue a new challenge only when there is none or the current one expired.
+            // While inference is in flight the miner pings the node every 200 ms with an
+            // empty inference_result; the old OR logic (`!passed || expired`) regenerated
+            // a new nonce on every ping, so the response never matched. Now we only rotate
+            // the nonce on expiry — pending challenges return a stable nonce until answered.
+            let issue_new = match states.get(&conn_id) {
                 None => true,
-                Some(state) => !state.passed || current_daa.saturating_sub(state.issued_at_daa) >= INFERENCE_CHALLENGE_INTERVAL_DAA,
+                Some(state) => current_daa.saturating_sub(state.issued_at_daa) >= INFERENCE_CHALLENGE_INTERVAL_DAA,
             };
 
-            if needs_challenge {
+            if issue_new {
                 use rand::{Rng, RngCore};
                 let idx = rand::thread_rng().gen_range(0..declared_model_ids.len());
                 let model_id_hex = declared_model_ids[idx].clone();
@@ -470,8 +474,15 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
                     passed: false,
                 });
                 challenge
+            } else if let Some(state) = states.get(&conn_id) {
+                if state.passed {
+                    // Challenge passed and not yet expired — no challenge needed.
+                    String::new()
+                } else {
+                    // Challenge pending — echo the same model:nonce so the miner can answer.
+                    format!("{}:{}", state.model_id_hex, state.nonce_hex)
+                }
             } else {
-                // Challenge already passed and not yet expired — no challenge needed.
                 String::new()
             }
         } else {
