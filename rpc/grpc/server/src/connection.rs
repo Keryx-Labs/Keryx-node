@@ -21,7 +21,7 @@ use keryx_notify::{
     listener::{ListenerId, ListenerLifespan},
     notifier::Notifier,
 };
-use keryx_rpc_core::Notification;
+use keryx_rpc_core::{api::connection::RpcConnection, Notification};
 use parking_lot::Mutex;
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -442,5 +442,12 @@ impl ConnectionT for Connection {
 
     fn is_closed(&self) -> bool {
         self.inner.is_closed.load(Ordering::SeqCst)
+    }
+}
+
+impl RpcConnection for Connection {
+    fn id(&self) -> u64 {
+        // Use the lower 64 bits of the UUID as a stable unique identifier.
+        self.inner.connection_id.as_u128() as u64
     }
 }

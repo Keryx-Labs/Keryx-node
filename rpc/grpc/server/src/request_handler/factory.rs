@@ -137,6 +137,27 @@ impl Factory {
         });
         interface.replace_method(KaspadPayloadOps::NotifyFinalityConflict, method);
 
+        // GetBlockTemplate: pass the real gRPC connection so the node can issue OPoI challenges.
+        let method: KaspadMethod = Method::new(|server_ctx: ServerContext, connection: Connection, request: KaspadRequest| {
+            Box::pin(async move {
+                let mut response: KaspadResponse = match request.payload {
+                    Some(Payload::GetBlockTemplateRequest(ref req)) => {
+                        match keryx_rpc_core::GetBlockTemplateRequest::try_from(req) {
+                            Ok(rpc_req) => {
+                                let conn: Arc<dyn keryx_rpc_core::api::connection::RpcConnection> = Arc::new(connection);
+                                server_ctx.core_service.get_block_template_call(Some(&conn), rpc_req).await.into()
+                            }
+                            Err(err) => GetBlockTemplateResponseMessage::from(Err::<keryx_rpc_core::GetBlockTemplateResponse, _>(err)).into(),
+                        }
+                    }
+                    _ => return Err(GrpcServerError::InvalidRequestPayload),
+                };
+                response.id = request.id;
+                Ok(response)
+            })
+        });
+        interface.replace_method(KaspadPayloadOps::GetBlockTemplate, method);
+
         // Methods with special properties
         let network_bps = network_bps as usize;
         interface.set_method_properties(
